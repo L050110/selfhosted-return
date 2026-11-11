@@ -1,0 +1,18 @@
+# 本地产物
+*.log
+check-stdout.log
+check-stderr.log
+client-check-*.log
+
+# 生成的密钥和配置（绝不上传）
+server.key
+server.crt
+password.txt
+pin.txt
+server.yaml
+client.yaml
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
