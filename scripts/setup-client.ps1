@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Generate the client-side config for hysteria2.
 
@@ -30,8 +30,10 @@
     Downstream capacity. This becomes the hard ceiling for download speed.
 
 .PARAMETER HttpPort
-    Local HTTP proxy port. Default 7890 (mihomo convention).
-    Use 10809 for hysteria's own built-in HTTP proxy.
+    Local HTTP proxy port. Default 10809.
+    That matches hysteria's own built-in HTTP listener, so the generated config
+    needs no extra arguments. If you run mihomo instead, pass -HttpPort 7890 to
+    match its mixed-port convention.
 
 .PARAMETER SocksPort
     Local SOCKS5 port. Default 10808 (hysteria default).
@@ -171,11 +173,17 @@ quic:
   maxIdleTimeout: 30s
   keepAlivePeriod: 10s
 
-# Chrome-style QUIC fingerprint. Keeps the initial packet at 1250 bytes
-# instead of 1280, which is 30 bytes of headroom against the MTU trap.
-# Leave this on unless you have a reason not to.
-sniff:
-  enable: false
+# Chrome-style QUIC fingerprint. hysteria2 sends its Initial packet at 1250 bytes
+# (30 below quic-go's 1280 default), which is exactly the headroom that keeps it
+# under a 1280-MTU virtual adapter. Setting this to true disables that and sends
+# full-size packets, re-triggering the MTU trap on its own.
+# Verified against the binary: the key is `disableChromeParrot`, not `sniff`
+# (`sniff` exists only as an outbound-level field, so a top-level `sniff:` block
+# is silently ignored).
+disableChromeParrot: false
+
+# If you need to pin the size explicitly instead of relying on parrot mode:
+# maxPacketSize: 1250
 
 logLevel: info
 '@
