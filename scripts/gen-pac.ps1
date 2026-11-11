@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Generate a PAC file for system-proxy based split tunnelling.
 

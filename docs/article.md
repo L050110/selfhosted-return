@@ -167,7 +167,7 @@ CN2 GIA 能压到 150–180，再低是物理不可能
 
 ---
 
-## 六个坑，每个都会让你以为「这套东西不能用」
+## 九个坑，每个都会让你以为「这套东西不能用」
 
 ### 坑 1：MTU 差 28 字节，而且失败是静默的
 
@@ -266,7 +266,57 @@ RFC 6066 规定 TLS 的 SNI 扩展只能是 DNS 主机名，不能是 IP 字面�
 收到 IP 形式的 SNI，Go 的 `crypto/tls` 直接失败，错误码 `0x150 = internal_error`。
 而 `insecure: true` 只关掉证书链验证，不会让非法的 SNI 变合法。
 
-修法：`sni` 永远用域名形式（`insecure: true` 时不验证，填什么都行，只要不是 IP）。
+修法：`sni` 必须是域名形式，**而且必须等于服务端证书的 CN**。
+
+> 这条我一开始写错了，实测打回来：`insecure: true` 只跳过**证书链校验**，
+> SNI 的格式和匹配仍然会被检查。填一个「随便的占位域名」照样握手失败。
+>
+> 更麻烦的是 hysteria 2.x 的 `cert` 子命令**不吃任何参数**——
+> `hysteria cert --host my.domain` 直接 `FATAL cert command does not accept arguments`。
+> 它用 `os.Hostname()` 当 CN。所以正确流程是：
+> 先 `hysteria cert`，再读出 CN，再把客户端的 `sni` 对齐过去。
+> `scripts/setup-server.ps1` 会把 CN 写进 `cert-cn.txt`，
+> `setup-client.ps1` 读它——读不到就拒绝生成配置，而不是瞎填一个。
+
+### 坑 7：防火墙里一条指名的 `Block` 规则压过 `Allow`
+
+```
+症状：端口在听，进程在跑，服务端日志一条没有
+      客户端一直 timeout: no recent network activity
+      换个端口还是 timeout，关掉防火墙就好了
+```
+
+Windows 防火墙不是「有 Allow 就放行」。**任何一条显式 `Block` 命中就直接丢包**，
+后面的 `Allow` 根本不会被评估。装过几个代理工具之后很容易留下这种孤儿规则，
+端口写的是 `Any`，UDP/TCP 全封。
+
+修法：把指向隧道程序的 Block 规则删掉。`scripts/verify.ps1` 的 P7 会替你查。
+
+### 坑 8：SSH 里起的进程会跟着会话一起死
+
+远程起服务、断开 SSH、三十秒后进程没了，**没有任何退出日志**。
+`conhost --headless`、`-WindowStyle Hidden` 都救不了——会话结束时会关掉整个 job object。
+
+修法：让进程的父级不是你的 SSH 会话。用计划任务（`AtLogOn` + 每 5 分钟），
+脚本自己判断进程在不在，就是最朴素的看门狗。
+
+顺带一个坑：`schtasks /delete` 只删任务，**不会杀掉已经在跑的进程**。
+
+### 坑 9：用 TCP 探 QUIC 的端口，得到假阴性
+
+`Test-NetConnection -Port 9443` 返回 False，于是判断「服务端没起」，
+去改防火墙、改端口、换机器，全白费。
+
+`listen: :9443` 是 **UDP/QUIC**，那个端口上根本没有 TCP listener，
+所以 TCP 连不上是**正确行为**。
+
+修法：别探端口，直接测端到端——能不能出网、出口是不是对端的 IP：
+
+```powershell
+curl.exe -s --socks5-hostname 127.0.0.1:1081 https://ipinfo.io/json
+```
+
+DNS、QUIC 握手、Brutal、NAT、防火墙，任何一环坏了它都会失败。
 
 ---
 
@@ -317,7 +367,7 @@ Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Setti
 ❌ 你需要 7×24 可用            这套做不到，一端关机或重启就断
 ❌ 你只是想看视频刷社交        商业加速器更省事
 ❌ 链路丢包低于 0.5%           hysteria2 优势发挥不出来
-❌ 你不想折腾                  六个坑足够让不熟悉的用户放弃三次
+❌ 你不想折腾                  九个坑足够让不熟悉的用户放弃三次
 ```
 
 **适合：**
@@ -365,7 +415,7 @@ Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Setti
 docs/
   architecture.md   为什么这么选，和商业方案的完整对比，什么时候不该用
   performance.md    三部分解，宽带套餐和专线对照，成本表
-  pitfalls.md       六个坑：症状、根因、验证命令、修法
+  pitfalls.md       九个坑：症状、根因、验证命令、修法
   deploy.md         六阶段部署流程、并存过渡、回滚、检查清单
 scripts/
   setup-server.ps1        证书生成 + 服务端配置 + 配置校验

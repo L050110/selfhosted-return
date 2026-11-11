@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Generate the client-side config for hysteria2.
 
@@ -38,6 +38,12 @@
 .PARAMETER SocksPort
     Local SOCKS5 port. Default 10808 (hysteria default).
 
+.PARAMETER Sni
+    TLS SNI. Must equal the CN of the server certificate.
+    hysteria 2.x generates the cert with the SERVER MACHINE NAME as CN
+    (`hysteria cert` takes no arguments), so pass `-Sni <that machine name>`,
+    or copy cert-cn.txt from the server next to this script.
+
 .EXAMPLE
     .\setup-client.ps1 -ServerAddr 100.64.0.1 -DownMbps 95
 #>
@@ -53,7 +59,8 @@ param(
     [int]$UpMbps = 18,
     [int]$DownMbps = 95,
     [int]$HttpPort = 10809,
-    [int]$SocksPort = 10808
+    [int]$SocksPort = 10808,
+    [string]$Sni
 )
 
 $ErrorActionPreference = 'Continue'
@@ -108,12 +115,61 @@ if (-not $Pin) {
     }
 }
 
-# SNI must be a DNS name. RFC 6066 forbids IP literals in the SNI extension, and
-# a TLS stack that receives one fails the handshake with an opaque internal error
-# ("CRYPTO_ERROR 0x150 (remote): tls: internal error"). With insecure:true the
-# value is not verified anyway, so a fixed placeholder name is correct here.
-$sniValue = if ($ServerAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { 'hysteria.local' } else { $ServerAddr }
-Write-Host "  [i] TLS SNI set to '$sniValue' (must not be an IP literal)" -ForegroundColor DarkGray
+# SNI 有两条硬约束，两条都踩过：
+#   1. 不能是 IP 字面量（RFC 6066 禁止），否则握手报 CRYPTO_ERROR 0x150。
+#   2. **必须和服务端证书的 CN 一致**。`insecure: true` 只跳过证书链校验，
+#      SNI 的格式和匹配仍然会被检查。填一个「随便的占位域名」会直接握手失败。
+# 而 hysteria 2.x 的 `cert` 用**服务端机器名**当 CN，所以本站真正的做法是：
+# 把服务端生成的 cert-cn.txt 拷过来，或者用 -Sni 显式指定。
+$sniValue = $Sni
+
+if (-not $sniValue) {
+    $cnFile = Join-Path $root 'cert-cn.txt'
+    if (Test-Path $cnFile) {
+        $sniValue = (Get-Content $cnFile -Raw).Trim()
+        Write-Host "  [OK] SNI read from cert-cn.txt: $sniValue"
+    }
+}
+
+if (-not $sniValue) {
+    $crtFile = Join-Path $root 'server.crt'
+    if (Test-Path $crtFile) {
+        try {
+            $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $crtFile
+            $sniValue = $c.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+            if ($sniValue) { Write-Host "  [OK] SNI read from server.crt CN: $sniValue" }
+        }
+        catch { $sniValue = $null }
+    }
+}
+
+if (-not $sniValue) {
+    if (-not ($ServerAddr -match '^\d{1,3}(\.\d{1,3}){3}$')) {
+        $sniValue = $ServerAddr
+        Write-Host "  [i] SNI defaulted to the server name '$sniValue'" -ForegroundColor DarkGray
+    }
+}
+
+if (-not $sniValue) {
+    Write-Host ""
+    Write-Host "  [X] 不知道 SNI 该填什么，不敢瞎填。" -ForegroundColor Red
+    Write-Host "      填错的表现是 CRYPTO_ERROR 0x150 (remote): tls: internal error，" -ForegroundColor Yellow
+    Write-Host "      看起来像证书或密码问题，极难反推。" -ForegroundColor Yellow
+    Write-Host "" -ForegroundColor Yellow
+    Write-Host "      两个办法，任选其一：" -ForegroundColor Yellow
+    Write-Host "        1) 把服务端生成的 cert-cn.txt 拷到这个目录，再跑一次" -ForegroundColor Yellow
+    Write-Host "        2) 显式指定：-Sni <服务端证书的 CN>" -ForegroundColor Yellow
+    Write-Host "           （在服务端跑：openssl x509 -in server.crt -noout -subject）" -ForegroundColor Yellow
+    exit 1
+}
+
+if ($sniValue -match '^\d{1,3}(\.\d{1,3}){3}$') {
+    Write-Host "  [X] SNI '$sniValue' 是 IP 字面量，RFC 6066 禁止，握手必失败。" -ForegroundColor Red
+    Write-Host "      用服务端证书的 CN。" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "  [i] TLS SNI = '$sniValue'（必须等于服务端证书 CN）" -ForegroundColor DarkGray
 
 if ($Pin) {
     Write-Host "  [OK] pin: $Pin"

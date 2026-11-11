@@ -78,12 +78,22 @@ if ($existing -and -not $Overwrite) {
 Write-Host "=== certificate ===" -ForegroundColor Cyan
 Push-Location $root
 try {
-    # 2>&1 把 stderr 并进 stdout，避免被当成异常
-    $certOut = & $exe cert --host $CertHost --overwrite 2>&1
+    # hysteria 2.x 的 `cert` 子命令【不吃任何参数】（v2.13.0 实测：
+    # 带 --host 会直接 FATAL "cert command does not accept arguments"）。
+    # 它用 os.Hostname() 当 CN，同时生成 DNS Name=<机器名> 的 SAN。
+    # 老版本（1.x / 部分 2.0）才需要 --host。所以：先试无参，失败再退回 --host。
+    $certOut = & $exe cert 2>&1
     $certCode = $LASTEXITCODE
+    if ($certCode -ne 0) {
+        Write-Host "  [i] bare 'cert' did not work, retrying with --host (older builds)" -ForegroundColor DarkGray
+        $certOut  = & $exe cert --host $CertHost --overwrite 2>&1
+        $certCode = $LASTEXITCODE
+    }
     $certOut | ForEach-Object { Write-Host "  $_" }
     if ($certCode -ne 0) {
         Write-Host "  [X] cert generation failed (exit=$certCode)" -ForegroundColor Red
+        Write-Host "      If your hysteria build wants a host, pass -CertHost; if it rejects arguments," -ForegroundColor Yellow
+        Write-Host "      this is a bug report worth filing upstream." -ForegroundColor Yellow
         exit 1
     }
 }
@@ -111,6 +121,37 @@ catch {
     Write-Host "  [!] could not compute pin: $($_.Exception.Message)" -ForegroundColor Yellow
     Write-Host "      hysteria cert prints pinSHA256 above; copy that value instead."
 }
+
+# ---------- 1b. 读出证书的 CN ----------
+# 客户端的 tls.sni 必须等于这个值。填错就是 CRYPTO_ERROR 0x150，
+# 而且报错信息看起来像证书/密码问题，完全指向错误方向。
+$certCn = $null
+try {
+    $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $certPath
+    $certCn = $c.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if ($certCn) {
+        Set-Content -Path (Join-Path $root 'cert-cn.txt') -Value $certCn -Encoding ASCII
+    }
+}
+catch { $certCn = $null }
+
+Write-Host ""
+if ($certCn) {
+    Write-Host "  ============================================================" -ForegroundColor Green
+    Write-Host "   客户的 tls.sni 必须填这个值：  $certCn" -ForegroundColor Green
+    Write-Host "   （已写入 cert-cn.txt）" -ForegroundColor Green
+    Write-Host "  ============================================================" -ForegroundColor Green
+    if ($certCn -ne $CertHost) {
+        Write-Host "  [i] 注意：证书 CN 是 '$certCn'，不是你传的 -CertHost='$CertHost'。" -ForegroundColor DarkGray
+        Write-Host "      hysteria 2.x 的 cert 用机器名当 CN，-CertHost 只在老版本上生效。" -ForegroundColor DarkGray
+        Write-Host "      想要自定义域名，请用 openssl 自己签（见 docs/pitfalls.md 坑 6）。" -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "  [!] 读不出证书 CN。请在客户端和这里分别执行：" -ForegroundColor Yellow
+    Write-Host "      openssl x509 -in server.crt -noout -subject" -ForegroundColor Yellow
+    Write-Host "      然后把客户端 tls.sni 填成 subject 里的 CN。" -ForegroundColor Yellow
+}
+Write-Host ""
 
 # ---------- 2. random password ----------
 $bytes = New-Object byte[] 16

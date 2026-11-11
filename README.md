@@ -91,9 +91,9 @@ hysteria2 负责跑流量（QUIC + 固定速率拥塞控制，高丢包环境下
 
 ---
 
-## 六个必踩的坑（都在这了）
+## 九个必踩的坑（都在这了）
 
-部署过程中有六个坑，每一个都会让你以为「这套东西不能用」：
+部署过程中有九个坑，每一个都会让你以为「这套东西不能用」：
 
 1. **MTU：QUIC 首包 1308 字节，虚拟网卡默认 1280 只允许 1252** —— 差 28 字节，
    而且失败是**静默的**（客户端只报超时，服务端零日志，抓包抓不到）
@@ -102,9 +102,26 @@ hysteria2 负责跑流量（QUIC + 固定速率拥塞控制，高丢包环境下
 4. **Windows 上改 MTU 必须用 `TS_DEBUG_MTU` 环境变量**，`netsh` 会被服务重启覆盖
 5. **本地代理内核可能劫持你的隧道进程**，让流量绕远路，速度掉一半
 6. **`tls.sni` 填了 IP 地址会握手失败** —— 报 `CRYPTO_ERROR 0x150`，
-   看起来像证书或密码问题，实际是 RFC 6066 禁止 SNI 用 IP 字面量
+   看起来像证书或密码问题，实际是 RFC 6066 禁止 SNI 用 IP 字面量。
+   更隐蔽的是：`sni` **还必须等于服务端证书的 CN**，而 `hysteria cert`
+   在 v2.13 里**不吃任何参数**，CN 取的是服务端机器名
+7. **防火墙里一条指名的 `Block` 规则会压过 `Allow`** —— 端口在听、服务端零日志、
+   客户端一直 timeout，你会去改端口改协议改机器，全是白费
+8. **SSH 里起的进程会跟着会话一起死** —— `conhost --headless` 也救不了，
+   只能用计划任务；而且 `schtasks /delete` 不会杀掉已经在跑的进程
+9. **用 TCP 探 QUIC 的端口会得到假阴性** —— `listen: :9443` 是 UDP，
+   TCP 连不上才是正常的。要验证就测「能不能出网、出口是不是对端的 IP」
 
 完整说明 + 排查方法：[docs/pitfalls.md](docs/pitfalls.md)
+
+**先用一条命令自检**（只读，不改任何配置）：
+
+```powershell
+.\scripts\verify.ps1 -ClientConfig .\client.yaml -ServerConfig .\server.yaml `
+                     -TaskName hysteria-client-watchdog -PeerExitIp <对端公网 IP>
+```
+
+九项逐条断言，红项会直接打印修复命令。退出码 0 = 全绿。
 
 ---
 
@@ -129,6 +146,9 @@ git clone <THIS_REPO>
 
 # 4. 在【境外】这台生成分流规则
 .\scripts\gen-pac.ps1
+
+# 5. 自检九项，全绿再用
+.\scripts\verify.ps1 -ClientConfig .\client.yaml -ServerConfig .\server.yaml
 ```
 
 详细步骤（含新旧方案并存、一条命令回滚）：[docs/deploy.md](docs/deploy.md)
@@ -139,18 +159,25 @@ git clone <THIS_REPO>
 
 ```
 docs/
-  article.md        完整长篇：为什么做、实测数据、三部分解、六个坑、取舍
-  architecture.md   为什么这么选，和商业加速器的对比
-  performance.md    理论上限：宽带套餐、专线、协议栈开销
-  pitfalls.md       六个坑的完整说明和排查方法
-  deploy.md         部署流程、并行过渡、回滚
+  article.md            完整长篇：为什么做、实测数据、三部分解、坑、取舍
+  architecture.md       为什么这么选，和商业加速器的对比
+  performance.md        理论上限：宽带套餐、专线、协议栈开销
+  pitfalls.md           九个坑的完整说明和排查方法
+  deploy.md             部署流程、并行过渡、回滚
+  verified-versions.md  真的跑起来过的版本组合（含三个版本相关的坑）
 scripts/
   setup-server.ps1      生成服务端配置 + 自签证书   （在【境内】那台跑）
-  setup-client.ps1      生成客户端配置              （在【境外】这台跑）
+  setup-client.ps1      生成客户端配置 + 握手自检    （在【境外】这台跑）
   install-watchdog.ps1  看门狗：崩溃 5 秒重启        （两端各跑一次，-Role 不同）
   gen-pac.ps1           生成分流 PAC                （在【境外】这台跑）
+  verify.ps1            一键自检，九项断言，红项给修复命令
+  probe.ps1             每 5 秒一条的链路探针（互斥体保证单实例）
+  clashpipe.ps1         读写 Clash/mihomo 的命名管道 API
 examples/
   proxy-mihomo.pac      过渡期三级回退 PAC 示例
+measurements/
+  probe-sample.csv      探针原始记录样本
+  2026-11-12-scenario.md  gost → hysteria2 前后对照实测
 ```
 
 > 第一次来建议先读 [docs/article.md](docs/article.md)，它把「为什么这么做」「天花板在哪」

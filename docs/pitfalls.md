@@ -1,4 +1,4 @@
-# 六个必踩的坑
+# 九个必踩的坑
 
 **每一个都会让你以为「这套东西根本不能用」。按顺序看，因为后一个可能被前一个掩盖。**
 
@@ -355,16 +355,43 @@ tls:
   pinSHA256: aa:bb:cc:...  # 有 pin 更稳
 ```
 
-**用 `hysteria cert` 生成证书时，CN 由 `--host` 的第一个值决定：**
+**用 `hysteria cert` 生成证书时，CN 是「这台机器的名字」，不是你能随手指定的域名。**
+
+这一条实测推翻过一个流传很广的写法（包括本文档的旧版本）：
 
 ```powershell
-hysteria cert --host hysteria.local
-#               ↑ 这个值就是 CN，客户端 sni 要跟它一致
+hysteria cert --host hysteria.local     # ❌ v2.13.0 直接报错
+# FATAL cert command does not accept arguments
 ```
 
-**注意：`--host` 传多个值（`hysteria.local,10.0.0.1`）只会让 CN 取第一个，
-不会生成 SAN 扩展。所以不要指望靠 SAN 覆盖 IP 访问。**
+正确用法是**不带任何参数**：
 
+```powershell
+hysteria cert
+```
+
+v2.13.0 用 `os.Hostname()` 当 CN，同时生成 `DNS Name=<机器名>` 的 SAN。
+机器叫什么，证书就叫什么。所以真正要做的不是「指定域名」，
+而是**先查出 CN 是什么，再把客户端的 `sni` 对齐过去**：
+
+```powershell
+# 对端机器上：看证书到底叫什么
+openssl x509 -in server.crt -noout -subject -ext subjectAltName
+#   subject=CN=MSI
+#   X509v3 Subject Alternative Name: DNS:MSI
+```
+
+```yaml
+# 客户端
+tls:
+  sni: MSI          # ← 就是上面那个 CN
+  insecure: true
+```
+
+`insecure: true` 只跳过证书链校验，**SNI 的格式和匹配仍然会被检查**。
+所以 `insecure` 不是「全关了」。
+
+想要自己的域名，就别用 `hysteria cert`，用 `openssl` 或 ACME 自己签一张。
 ## 为什么这个坑值得记
 
 ```
@@ -374,6 +401,142 @@ hysteria cert --host hysteria.local
 · 排查时会先去查密码、证书、端口，全查完才想到 SNI
 ```
 
+# 坑 7：防火墙里一条指名的 `Block` 规则会压过 `Allow`，而且不报错
+
+## 症状
+
+端口在听、进程在跑、服务端日志一条都没有，客户端就是 `timeout: no recent network activity`。
+
+换个端口还是 timeout。关掉防火墙就好了 —— 但你看不出为什么。
+
+## 根因
+
+Windows 防火墙的判定不是「有 Allow 就放行」。**任何一条显式 `Block` 规则命中，就直接丢包**，
+后面的 `Allow` 根本不会被评估。Windows 上装过多个代理工具之后，很容易留下这种孤儿规则：
+
+```
+Name    : hysteria.exe
+Action  : Block
+Enabled : True
+Program : C:\...\hysteria.exe
+Protocol: Any        ← 端口写的是 Any，UDP/TCP 全封
+```
+
+而同时你可能还有一条看起来很正常的 `Allow`：
+
+```
+Name    : hysteria2 server 9443
+Action  : Allow
+Protocol: UDP
+```
+
+两条同时存在，结果是全封。
+
+## 验证
+
+```powershell
+Get-NetFirewallRule | Where-Object { $_.Action -eq 'Block' -and $_.Enabled -eq 'True' } |
+  ForEach-Object {
+    $app = ($_ | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
+    [pscustomobject]@{ Name = $_.DisplayName; Program = $app; Proto = $_.Protocol }
+  } | Where-Object { $_.Program -match 'hysteria|tailscale|clash|mihomo' }
+```
+
+## 修法
+
+```powershell
+Remove-NetFirewallRule -DisplayName "hysteria.exe"
+```
+
+然后只需要一条正常的放行规则：
+
+```powershell
+New-NetFirewallRule -DisplayName "hysteria2 server 9443" -Direction Inbound `
+  -Protocol UDP -LocalPort 9443 -Action Allow
+```
+
+`scripts/verify.ps1` 的 P7 就是断言这一条。
+
+---
+
+# 坑 8：SSH 里起的进程会跟着会话一起死
+
+## 症状
+
+远程 `Start-Process hysteria` 起来，`Get-Process` 能看到，服务日志也正常。
+断开 SSH 三十秒后再看：进程没了。没有任何退出日志。
+
+换 `conhost --headless` 启动、`-WindowStyle Hidden`、`nohup` 式的写法，一样会死。
+
+## 根因
+
+Windows 上的 SSH 会话结束时会关掉整个 job object，子进程被连带清理。
+这不是「进程崩溃」，所以不会有任何日志 —— 你只会看到它凭空消失。
+
+## 修法
+
+让进程的父级不是你的 SSH 会话。最稳的是**计划任务**：
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+             -Argument "-NoProfile -WindowStyle Hidden -File C:\path\run-server.ps1"
+$trigger = @(
+  (New-ScheduledTaskTrigger -AtLogOn),
+  (New-ScheduledTaskTrigger -Once -At (Get-Date) `
+     -RepetitionInterval (New-TimeSpan -Minutes 5) `
+     -RepetitionDuration (New-TimeSpan -Days 3650))
+)
+Register-ScheduledTask -TaskName "hysteria-server-watchdog" -Action $action `
+  -Trigger $trigger -RunLevel Limited -LogonType Interactive -Force
+```
+
+两层保险：`AtLogOn` 保证开机自启，每 5 分钟的触发器兼作看门狗（脚本自己会判断进程在不在）。
+
+`run-server.ps1` 写成一个 while 循环就行：
+
+```powershell
+while ($true) {
+  $p = Start-Process hysteria -ArgumentList 'server','-c','server.yaml' -PassThru -NoNewWindow
+  $p.WaitForExit()
+  "$(Get-Date -f s) exited code=$($p.ExitCode)" | Add-Content watchdog-server.log
+  Start-Sleep -Seconds 5
+}
+```
+
+**注意**：`schtasks /delete` 只删任务，**不会杀掉已经在跑的进程**。要清理就得单独 kill，
+否则你会以为「任务删了它还在跑，是不是被什么东西托着」。
+
+---
+
+# 坑 9：用 TCP 去探 QUIC 的端口，会得到假阴性
+
+## 症状
+
+`Test-NetConnection -Port 9443` 返回 False，于是判断「服务端没起 / 防火墙封了」，
+去改防火墙、改端口、换机器，全白费。
+
+## 根因
+
+hysteria2 的 `listen: :9443` 是 **UDP/QUIC**。那个端口上根本没有 TCP listener，
+所以 TCP 连不上是**正确行为**，不是故障。
+
+同理，`netstat -ano | findstr 9443` 只看 TCP 的话也会是空的 —— 要用 `-p UDP`。
+
+## 验证
+
+别探端口，**直接测「能不能从这条隧道出去，出口是不是对端的 IP」**：
+
+```powershell
+curl.exe -s --socks5-hostname 127.0.0.1:1081 https://ipinfo.io/json
+# {"ip": "66.214.169.129", ...}   ← 等于对端的公网 IP 才算通
+```
+
+这是端到端断言：DNS、QUIC 握手、Brutal、NAT、防火墙，任何一环坏了它都会失败。
+比探端口强得多。
+
+`scripts/verify.ps1` 的 P9 就是干这个，并且会把出口 IP 和 `-PeerExitIp` 比对。
+
+---
 ---
 
 # 附：一张排查顺序图

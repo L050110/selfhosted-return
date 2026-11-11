@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install a watchdog for hysteria2 or mihomo: restart automatically on crash.
 
