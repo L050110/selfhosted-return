@@ -1,4 +1,4 @@
-# 九个必踩的坑
+# 十二个必踩的坑
 
 **每一个都会让你以为「这套东西根本不能用」。按顺序看，因为后一个可能被前一个掩盖。**
 
@@ -321,15 +321,29 @@ tls:
   insecure: true
 ```
 
-**但 RFC 6066 明确规定：TLS 的 SNI 扩展只能是 DNS 主机名，不能是 IP 字面量。**
+**Go 的 `crypto/tls` 在生成 ClientHello 时，遇到 IP 字面量会直接不发 SNI。**
+
+不是「发了一个非法的 SNI 被拒」，而是**什么都没发**。源码里 `hostnameInSNI()` 的行为很明确：
+
+```go
+if net.ParseIP(host) != nil {
+    return ""          // IP 字面量 → 返回空串 → 不写 SNI 扩展
+}
+```
+
+于是真实链路是：
 
 ```
-收到 IP 形式的 SNI，Go 的 crypto/tls 直接失败
-错误码 0x150 = TLS alert internal_error
-客户端拿到的就是这个不透明的 CRYPTO_ERROR
+sni: 10.0.0.1  →  ClientHello 里没有 SNI 扩展
+               →  服务端拿不到主机名，sniGuard / 证书选择失败
+               →  回 TLS alert internal_error (80)
+               →  客户端看到 CRYPTO_ERROR 0x150
 ```
 
-**而 `insecure: true` 只关掉「证书链验证」，不会让非法的 SNI 变合法。**
+**RFC 6066 §3 确实写了 HostName 不允许 IP 字面量，但那条例在这里不是触发点。**
+这个区别会影响排查方向：该找「**SNI 缺失**」，不是找「SNI 写错了」。
+
+**`insecure: true` 只关掉「证书链验证」，不会把缺失的 SNI 补回来。**
 
 ## 验证
 
@@ -528,7 +542,7 @@ hysteria2 的 `listen: :9443` 是 **UDP/QUIC**。那个端口上根本没有 TCP
 
 ```powershell
 curl.exe -s --socks5-hostname 127.0.0.1:1081 https://ipinfo.io/json
-# {"ip": "66.214.169.129", ...}   ← 等于对端的公网 IP 才算通
+# {"ip": "<对端出口IP>", ...}   ← 等于对端的公网 IP 才算通
 ```
 
 这是端到端断言：DNS、QUIC 握手、Brutal、NAT、防火墙，任何一环坏了它都会失败。
@@ -556,4 +570,152 @@ curl.exe -s --socks5-hostname 127.0.0.1:1081 https://ipinfo.io/json
     │   └─ 内置测速快、实际慢 → 源站限速（正常）或坑 5（被劫持）
     └─ 多流能上去但单流上不去
         └─ → 源站按连接限速，正常现象，无法突破
+```
+
+---
+
+# 坑 10：WebRTC 泄漏，在 TUN 模式下浏览器参数救不回来
+
+## 症状
+
+出口 IP 已经绑到对端住宅 IP，DNS 也跟着走了，但 WebRTC 检测里仍显示**第三个国家**的 IP。
+
+## 根因（两层）
+
+**第一层：本地代理内核开着 TUN 模式。**
+
+TUN 在**操作系统路由层**就把 UDP 接走了。浏览器参数管的是「浏览器自己的代理逻辑」，
+管不到 OS 路由。所以 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`
+**确实生效了**（进程命令行里能看到），但拦不住已经被 TUN 抓走的包。
+
+**第二层：Chromium 的 WebRTC 不支持通过 SOCKS5 转发 UDP。**
+
+它只代理 TCP。所以即使指定了 `--proxy-server="socks5://..."`，
+STUN 的 UDP 依然落到系统路由上，最终命中规则表兜底。
+
+## 验证
+
+```powershell
+# 确认参数真的带上了（看不到就是参数没进进程，Edge 必须先完全退出）
+Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
+  Where-Object { $_.CommandLine -notlike '*--type=*' } |
+  Select-Object ProcessId, CommandLine
+```
+
+## 判定：可以不修
+
+三条修法代价都大于收益：
+
+| 方法 | 代价 |
+| --- | --- |
+| 改浏览器组策略（注册表 `WebRtcIPHandlingPolicy`） | 碰注册表，不保证比命令行参数更管用 |
+| 关掉 TUN | 影响全局，所有程序的流量路径都变 |
+| 按 `DST-PORT` 把 STUN 端口送进隧道 | 很脆，STUN 端口会变（Google 用 19302/19305，TURN 用 443/3478） |
+
+**而且多数站点不拿 WebRTC 当风控信号**——若真拿它判定，会误伤大量正常用户。
+
+**真正有用的替代**：把浏览器**整个**绑到一条固定出口的端口（见坑 11 / [outbound.md](outbound.md)），
+这样至少 IP 和 DNS 是一致的。
+
+---
+
+# 坑 11：`listeners[].proxy` 只认真实节点名，写策略组名会静默不监听
+
+## 症状
+
+端口矩阵配好了，`mixed` 端口也写了，但那个端口**连不上**。没有报错、没有日志。
+
+## 根因
+
+```yaml
+listeners:
+  - name: line-7890
+    type: mixed
+    port: 7890
+    proxy: 美国              # ← 这是一个「策略组」名，不是真实节点
+```
+
+`listeners[].proxy` **只接受真实节点名**（proxies 里那个 `name`）。
+填策略组名不会报错，只会**静默不监听**。
+
+## 验证
+
+```powershell
+# 端口在不在听
+Get-NetTCPConnection -State Listen -LocalPort 7890
+
+# 出口对不对（能连上才有输出）
+curl.exe -s -m 15 -x socks5h://127.0.0.1:7890 https://ipinfo.io/ip
+```
+
+## 修法
+
+```yaml
+listeners:
+  - name: line-7890
+    type: mixed
+    port: 7890
+    proxy: 对端节点名        # ← 必须是 proxies 里那个真实 name
+```
+
+---
+
+# 坑 12：改运行时配置文件没用，会被重新生成；而且两个看门狗会抢同一个端口
+
+## 症状 A：改了配置，重载后没生效
+
+**根因**：本地代理前端（Clash Verge 之类）目录下的 `config.yaml` / `clash-verge.yaml`
+是**运行时生成文件**。你在里面手工加规则、加代理，重载或重启时会被**重新生成覆盖掉**。
+
+**判断方法**：改完看一眼文件大小和修改时间，如果和你写的不一样，就是被覆盖了。
+
+**修法**：改**持久层**，不是改生成物。
+
+| 层 | 位置 | 说明 |
+| --- | --- | --- |
+| 订阅 | `profiles/<订阅id>.yaml` | 会被订阅更新覆盖，别手改 |
+| **merge / script** | `profiles/<mergeid>.yaml`、`profiles/<scriptid>.js` | **持久层，改这里** |
+| 运行时 | `config.yaml`、`clash-verge.yaml` | 生成物，改了白改 |
+
+**注意**：`profiles/` 下有一个 `Merge.yaml` 和一个 `Script.js`，那可能只是**模板**，
+不一定是当前生效的那份。真实文件名在 `profiles.yaml` 里：
+
+```yaml
+items:
+  - uid: <订阅>
+    merge:   mopzGq9Z9xoY      # ← 这个才是生效的 merge
+    script:  sx0INUYwx2yO      # ← 这个才是生效的 script
+```
+
+## 症状 B：隧道反复启动失败，报端口被占用
+
+```
+FATAL failed to run SOCKS5 server
+{"error": "listen tcp4 127.0.0.1:1081: bind: Only one usage of each socket address ..."}
+```
+
+**根因**：有两个 watchdog 在跑，一个负责拉起隧道，另一个**负责拉起旧方案**。
+隧道一停，旧方案那个 watchdog 立刻抢占同一个本地端口，于是隧道再也绑不上，
+5 秒后重试、再被抢、无限循环。
+
+**表现**：看起来像「隧道随机重连」，实际是端口争夺。
+
+**排查**：
+
+```powershell
+# 谁占着这个端口
+Get-NetTCPConnection -State Listen -LocalPort 1081 | Select-Object OwningProcess
+Get-CimInstance Win32_Process -Filter "ProcessId=<上一步的 PID>" | Select-Object CommandLine
+
+# 有哪些计划任务在跑
+Get-ScheduledTask | Where-Object { $_.TaskName -match 'hysteria|guard|watchdog' } |
+  Select-Object TaskName, State
+```
+
+**修法**：**停掉旧方案那个 watchdog**（通常是计划任务），别只杀进程——
+杀进程它还会被拉起来。
+
+```powershell
+Disable-ScheduledTask -TaskName <旧方案的任务名>
+# 恢复用：Enable-ScheduledTask -TaskName <同名>
 ```

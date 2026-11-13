@@ -10,7 +10,7 @@
     -TunnelProcess 是跑隧道的进程名（hysteria.exe / tailscaled.exe）。
 
 .EXAMPLE
-    .\verify.ps1 -ClientConfig ..\hysteria-us\client.yaml -PeerIp 100.68.245.1
+    .\verify.ps1 -ClientConfig ..\hysteria-us\client.yaml -PeerIp 100.x.x.x
 #>
 [CmdletBinding()]
 param(
