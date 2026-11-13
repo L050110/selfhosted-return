@@ -203,13 +203,13 @@ docs/
   deploy.md             部署流程、并行过渡、回滚
   verified-versions.md  真的跑起来过的版本组合（含三个版本相关的坑）
 scripts/
-  check-docs.ps1        文档一致性门禁：改一处漏一处就会红
+  check-docs.ps1        文档一致性门禁：改一处漏一处就会红（-SelfTest 自检正则）
   setup-server.ps1      生成服务端配置 + 自签证书   （在【境内】那台跑）
   setup-client.ps1      生成客户端配置 + 握手自检    （在【境外】这台跑）
   install-watchdog.ps1  看门狗：崩溃 5 秒重启        （两端各跑一次，-Role 不同）
   gen-pac.ps1           生成分流 PAC                （在【境外】这台跑）
   verify.ps1            一键自检，十项断言，红项给修复命令
-  check-docs.ps1        文档一致性门禁（14 项，CI 里跑）
+  check-docs.ps1        文档一致性门禁（CI 里跑，-SelfTest 可自检）
   probe.ps1             每 5 秒一条的链路探针（互斥体保证单实例）
   clashpipe.ps1         读写 Clash/mihomo 的命名管道 API
 examples/

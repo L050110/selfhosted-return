@@ -88,9 +88,30 @@ hysteria2 client  ──QUIC(Brutal)──▶  Tailscale tunnel (WireGuard)
 | **Tailscale 默认网卡** | — | — | 1280（只够第一行） |
 | **本项目建议** | — | — | **1320** |
 
-出处：apernet/quic-go fork `internal/protocol/params.go` 的
-`const InitialPacketSize = 1280`，以及 `chrome_parrot.go` 的
-`chromeInitialPacketSize = 1250`（`populateConfig()` 里 parrot 开启时用它覆盖）。
+出处（hysteria v2.13.0 依赖的 `apernet/quic-go` fork，commit `a10df75c260c`）：
+
+| 常量 | 文件路径 | 值 |
+| --- | --- | --- |
+| `protocol.InitialPacketSize` | `internal/protocol/params.go` | **1280** |
+| `chromeInitialPacketSize` | **仓库根目录** `chrome_parrot.go` | **1250** |
+
+**注意 `chrome_parrot.go` 在仓库根目录，不在 `internal/protocol/` 下**——
+按 `internal/protocol/` 去找会 404，有人在这里踩过。
+
+覆盖发生在 `config.go` 的 `populateConfig()`：`if config.ChromeParrot { initialPacketSize = chromeInitialPacketSize }`。
+
+源码原文：
+
+```go
+// internal/protocol/params.go
+const InitialPacketSize = 1280
+
+// chrome_parrot.go（仓库根目录，不在 internal/protocol/ 下）
+chromeInitialPacketSize = 1250
+```
+
+permalink（可核）：
+`https://github.com/apernet/quic-go/blob/a10df75c260c/chrome_parrot.go`
 
 **判据：网卡 MTU < 1308 时，只要有人把 `disableChromeParrot` 打开，握手就会静默挂。**
 所以别赌默认值，直接设 **1320**。

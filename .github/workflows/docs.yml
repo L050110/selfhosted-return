@@ -19,8 +19,13 @@ jobs:
       - name: 脚本语法解析（全部 .ps1）
         shell: pwsh
         run: |
+          $ps1 = @(Get-ChildItem ./scripts -Filter *.ps1 -File)
+          if ($ps1.Count -lt 5) {
+            Write-Host "FAIL 只找到 $($ps1.Count) 个脚本 —— 路径或 glob 写错了，这步等于没跑"
+            exit 1
+          }
           $bad = 0
-          Get-ChildItem ./scripts -Filter *.ps1 -File | ForEach-Object {
+          $ps1 | ForEach-Object {
             $err = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$err)
             if ($err -and $err.Count -gt 0) {
