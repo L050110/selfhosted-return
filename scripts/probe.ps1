@@ -27,9 +27,25 @@ if (-not $GatewayIp) {
 $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
 if (-not (Test-Path $tsExe)) { $tsExe = $null }
 
+$header = 'timestamp,gateway,public,peer,curAddr,relay,lastHandshake,tsDiag,' +
+          'egressIp,mbpsEff,ttfbSec,bytes,speedDiag'
+$headerCols = ($header -split ',').Count
+
+# 已有文件若列数不同，先轮转再新建。
+# 否则 Add-Content 会把 13 列的行掺进 8 列的老文件里，Import-Csv 不报错、
+# 但第 9 列起全部错位 —— 这种污染不可逆，必须挡在写之前。
+if (Test-Path $LogPath) {
+    $firstLine = Get-Content $LogPath -TotalCount 1 -ErrorAction SilentlyContinue
+    $curCols = 0
+    if ($firstLine) { $curCols = ($firstLine -split ',').Count }
+    if ($curCols -ne $headerCols) {
+        $bak = "$LogPath.$curCols" + "col-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".csv"
+        Move-Item -Path $LogPath -Destination $bak -Force
+        Write-Host ("旧格式 {0} 列，已轮转到 {1}" -f $curCols, $bak) -ForegroundColor Yellow
+    }
+}
+
 if (-not $NoHeader -and -not (Test-Path $LogPath)) {
-    $header = 'timestamp,gateway,public,peer,curAddr,relay,lastHandshake,tsDiag,' +
-              'egressIp,mbpsEff,ttfbSec,bytes,speedDiag'
     Set-Content -Path $LogPath -Value $header -Encoding UTF8
 }
 
@@ -120,18 +136,23 @@ function Measure-Throughput {
     if (-not $Port) { $r.Err = 'no-port'; return $r }
     try {
         $fmt = '%{time_total} %{time_starttransfer} %{size_download}'
-        $out = & curl.exe -s -m 90 -x "socks5h://127.0.0.1:$Port" -o NUL -w $fmt $Url 2>$null
+        $out = & curl.exe -s -m 30 -x "socks5h://127.0.0.1:$Port" -o NUL -w $fmt $Url 2>$null
         if (-not $out) { $r.Err = 'no-output'; return $r }
         $parts = ("$out").Trim() -split '\s+'
         if ($parts.Count -lt 3) { $r.Err = 'bad-format'; return $r }
 
+        # 固定 InvariantCulture：curl 输出的是 "6.4621" 这种点号小数，
+        # 用 CurrentCulture 时 de-DE / fr-FR 会把点号当千位分隔，三列全解析失败，
+        # 而现象看起来像「隧道坏了」。
+        $inv = [Globalization.CultureInfo]::InvariantCulture
+        $ns  = [Globalization.NumberStyles]::Float
         $total = 0.0; $ttfb = 0.0; $bytes = 0.0
-        if (-not [double]::TryParse($parts[0], [ref]$total)) { $r.Err = 'parse-total'; return $r }
-        if (-not [double]::TryParse($parts[1], [ref]$ttfb))  { $r.Err = 'parse-ttfb';  return $r }
-        if (-not [double]::TryParse($parts[2], [ref]$bytes)) { $r.Err = 'parse-bytes'; return $r }
+        if (-not [double]::TryParse($parts[0], $ns, $inv, [ref]$total)) { $r.Err = 'parse-total'; return $r }
+        if (-not [double]::TryParse($parts[1], $ns, $inv, [ref]$ttfb))  { $r.Err = 'parse-ttfb';  return $r }
+        if (-not [double]::TryParse($parts[2], $ns, $inv, [ref]$bytes)) { $r.Err = 'parse-bytes'; return $r }
 
         $r.Ttfb = [math]::Round($ttfb, 3)
-        $r.Bytes = [int]$bytes
+        $r.Bytes = [long]$bytes
         $payload = $total - $ttfb
         if ($payload -le 0 -or $bytes -le 0) { $r.Err = 'zero-payload'; return $r }
         $r.Mbps = [math]::Round($bytes * 8 / $payload / 1e6, 2)
@@ -149,7 +170,12 @@ function Get-EgressIp {
     if (-not $Port) { return '' }
     try {
         $ip = & curl.exe -s -m 15 -x "socks5h://127.0.0.1:$Port" https://ipinfo.io/ip 2>$null
-        if ($ip) { return ("$ip").Trim() }
+        if (-not $ip) { return '' }
+        # 只接受纯 IP 字面量。ipinfo 限流时会返回 HTML/JSON，原样写进 CSV 会因为
+        # 里面的引号把字段撕开，整行错位。
+        $t = ("$ip").Trim()
+        if ($t -match '^(\d{1,3}\.){3}\d{1,3}$' -or $t -match '^[0-9a-fA-F:]{6,45}$') { return $t }
+        return ''
     } catch { }
     return ''
 }
@@ -169,7 +195,9 @@ while ($true) {
         $thr = Measure-Throughput -Url $SpeedUrl -Port $SocksPort
     }
     $egress = ''
-    if ($SocksPort -and $EgressEvery -gt 0 -and ($script:round % $EgressEvery) -eq 0) {
+    # 错开半个周期：两个采样若落在同一轮，断链时超时会叠加。
+    $egressPhase = $script:round + [int][math]::Floor($EgressEvery / 2)
+    if ($SocksPort -and $EgressEvery -gt 0 -and ($egressPhase % $EgressEvery) -eq 0) {
         $egress = Get-EgressIp $SocksPort
     }
 

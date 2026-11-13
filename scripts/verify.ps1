@@ -22,13 +22,16 @@ param(
     [int]$QuicMtu = 1280,
     [int]$SocksPort,
     [int]$ListenPort,
-    [string]$PeerExitIp
+    [string]$PeerExitIp,
+    # 坑 12 的前提检测：运行时生成文件 vs 持久层
+    [string]$RuntimeConfig,
+    [string]$PersistentConfig
 )
 
 $ErrorActionPreference = 'Continue'
 $script:fail = 0
 $script:pass = 0
-$script:skip = 0
+$script:skip = 0`n$script:warn = 0
 
 function Report {
     param([string]$Id, [string]$Verdict, [string]$Detail, [string]$Fix)
@@ -36,6 +39,7 @@ function Report {
         'PASS' { $script:pass++; $c = 'Green' }
         'FAIL' { $script:fail++; $c = 'Red' }
         'SKIP' { $script:skip++; $c = 'DarkGray' }
+        'WARN' { $script:warn++; $c = 'Yellow' }
         default { $c = 'Yellow' }
     }
     Write-Host ("[{0,-4}] {1,-3} {2}" -f $Verdict, $Id, $Detail) -ForegroundColor $c
@@ -303,10 +307,50 @@ if ($ListenPort) {
     Report 'P11' 'SKIP' '没传 -ListenPort，跳过 listeners 绑定检查' $null
 }
 
+# ---------------------------------------------------------------- 坑 10/12：前提失效检测
+# 这两条「对不对」没法自动判，但「前提还在不在」可以。
+# 判 WARN 不判 FAIL：前提失效不等于链路坏了，只说明你之前的结论可能不再适用。
+
+# P10 前提：浏览器进程真的带上了 WebRTC 策略参数。
+# 不带参数 = TUN 模式下必然泄漏，这不是可选项。
+$seen = $false; $flagged = $false
+foreach ($bn in @('msedge.exe', 'chrome.exe')) {
+    $procs = Get-CimInstance Win32_Process -Filter "Name='$bn'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '--type=' }
+    foreach ($p in @($procs)) {
+        if (-not $p) { continue }
+        $seen = $true
+        if ($p.CommandLine -match '--force-webrtc-ip-handling-policy') { $flagged = $true }
+    }
+}
+if (-not $seen) {
+    Report 'P10' 'SKIP' '没在跑 msedge/chrome，没法检查 WebRTC 参数' $null
+} elseif ($flagged) {
+    Report 'P10' 'PASS' '浏览器进程带上了 --force-webrtc-ip-handling-policy' $null
+} else {
+    Report 'P10' 'WARN' '浏览器在跑，但命令行里没有 WebRTC 策略参数 —— TUN 模式下 UDP 仍会绕过代理' `
+        '用带 --force-webrtc-ip-handling-policy=disable_non_proxied_udp 的快捷方式启动；注意 Edge 必须先完全退出'
+}
+
+# P12 前提：运行时配置比持久层新 = 被重新生成过，对运行时文件的修改已经丢了。
+if ($RuntimeConfig -and $PersistentConfig -and
+    (Test-Path $RuntimeConfig) -and (Test-Path $PersistentConfig)) {
+    $rt = (Get-Item $RuntimeConfig).LastWriteTime
+    $ps = (Get-Item $PersistentConfig).LastWriteTime
+    if ($rt -gt $ps) {
+        Report 'P12' 'WARN' ("运行时配置({0:HH:mm:ss}) 比持久层({1:HH:mm:ss}) 新 — 说明被重新生成过，手改的运行时文件已失效" -f $rt, $ps) `
+            '改持久层（profiles 里的 merge/script），不要改生成物'
+    } else {
+        Report 'P12' 'PASS' '持久层不比运行时旧（手改若已生效，走的应是持久层）' $null
+    }
+} else {
+    Report 'P12' 'SKIP' '没传 -RuntimeConfig / -PersistentConfig，跳过配置覆盖检测' $null
+}
+
 # ---------------------------------------------------------------- 汇总
 Write-Host ""
-Write-Host ("PASS {0}   FAIL {1}   SKIP {2}" -f $script:pass, $script:fail, $script:skip) -ForegroundColor Cyan
-Write-Host "覆盖：坑 1-9（P1-P9）+ 坑 11（P11）。坑 10（WebRTC/TUN）与坑 12（运行时配置/看门狗）无法自动断言，需人工判断。" -ForegroundColor DarkGray
+Write-Host ("PASS {0}   FAIL {1}   WARN {2}   SKIP {3}" -f $script:pass, $script:fail, $script:warn, $script:skip) -ForegroundColor Cyan
+Write-Host "自动化断言：坑 1-9（P1-P9）+ 坑 11（P11）。坑 10/12 只做前提检测（WARN），'对不对'仍需人工判断。" -ForegroundColor DarkGray
 if ($script:fail -gt 0) {
     Write-Host "有 FAIL —— 先修上面红的那几项，再看其它。" -ForegroundColor Red
     exit 1
