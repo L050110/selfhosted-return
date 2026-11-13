@@ -4,7 +4,13 @@
     [string]$GatewayIp,
     [int]$PeerPort = 22,
     [int]$IntervalSeconds = 5,
-    [string]$LogPath
+    [string]$LogPath,
+    # ---- 吞吐/出口采样（可选；不进就直接退回纯可达性探针）----
+    [int]$SocksPort,
+    [string]$SpeedUrl = "https://speed.cloudflare.com/__down?bytes=5000000",
+    [int]$SpeedEvery = 12,
+    [int]$EgressEvery = 12,
+    [switch]$NoHeader
 )
 
 $ErrorActionPreference = 'Continue'
@@ -21,8 +27,10 @@ if (-not $GatewayIp) {
 $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
 if (-not (Test-Path $tsExe)) { $tsExe = $null }
 
-if (-not (Test-Path $LogPath)) {
-    'time,gateway,public,peer,curAddr,relay,lastHandshake,diag' | Set-Content -Path $LogPath -Encoding UTF8
+if (-not $NoHeader -and -not (Test-Path $LogPath)) {
+    $header = 'timestamp,gateway,public,peer,curAddr,relay,lastHandshake,tsDiag,' +
+              'egressIp,mbpsEff,ttfbSec,bytes,speedDiag'
+    Set-Content -Path $LogPath -Value $header -Encoding UTF8
 }
 
 # 防止多实例并发写同一个 CSV（用命名互斥量，同一时间只允许一个实例）
@@ -101,18 +109,77 @@ function Get-TsPeerInfo([string]$targetIp) {
     return $result
 }
 
+# ---------------------------------------------------------------- 吞吐 / 出口采样
+# 为什么不用 %{speed_download}：它 = 字节数 / time_total，分母含 DNS、建连、等首字节。
+# 225ms RTT 的洲际链路上 TTFB 常到 0.7–1.1s，摊进 20s 传输会凭空少 4–5%。
+# 所以这里取 time_total 和 time_starttransfer，自己算：
+#     有效吞吐 = 字节数 × 8 / (time_total − time_starttransfer)
+function Measure-Throughput {
+    param([string]$Url, [int]$Port)
+    $r = [pscustomobject]@{ Mbps = ''; Ttfb = ''; Bytes = 0; Err = '' }
+    if (-not $Port) { $r.Err = 'no-port'; return $r }
+    try {
+        $fmt = '%{time_total} %{time_starttransfer} %{size_download}'
+        $out = & curl.exe -s -m 90 -x "socks5h://127.0.0.1:$Port" -o NUL -w $fmt $Url 2>$null
+        if (-not $out) { $r.Err = 'no-output'; return $r }
+        $parts = ("$out").Trim() -split '\s+'
+        if ($parts.Count -lt 3) { $r.Err = 'bad-format'; return $r }
+
+        $total = 0.0; $ttfb = 0.0; $bytes = 0.0
+        if (-not [double]::TryParse($parts[0], [ref]$total)) { $r.Err = 'parse-total'; return $r }
+        if (-not [double]::TryParse($parts[1], [ref]$ttfb))  { $r.Err = 'parse-ttfb';  return $r }
+        if (-not [double]::TryParse($parts[2], [ref]$bytes)) { $r.Err = 'parse-bytes'; return $r }
+
+        $r.Ttfb = [math]::Round($ttfb, 3)
+        $r.Bytes = [int]$bytes
+        $payload = $total - $ttfb
+        if ($payload -le 0 -or $bytes -le 0) { $r.Err = 'zero-payload'; return $r }
+        $r.Mbps = [math]::Round($bytes * 8 / $payload / 1e6, 2)
+        $r.Err = 'ok'
+    } catch {
+        $m = $_.Exception.Message
+        $r.Err = 'err:' + $m.Substring(0, [Math]::Min(40, $m.Length))
+    }
+    return $r
+}
+
+# 出口 IP：确认这一轮流量确实从对端出去，而不是被本地代理劫走。
+function Get-EgressIp {
+    param([int]$Port)
+    if (-not $Port) { return '' }
+    try {
+        $ip = & curl.exe -s -m 15 -x "socks5h://127.0.0.1:$Port" https://ipinfo.io/ip 2>$null
+        if ($ip) { return ("$ip").Trim() }
+    } catch { }
+    return ''
+}
+
+$script:round = 0
 while ($true) {
+    $script:round++
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $gwStatus = Test-Icmp $GatewayIp
     $pubStatus = Test-Icmp $PublicIp
     $peerStatus = Test-TcpPort $PeerIp $PeerPort
     $peerInfo = Get-TsPeerInfo $PeerIp
 
+    # 吞吐/出口按各自周期采样，避免每 5 秒拖一次 5MB
+    $thr = [pscustomobject]@{ Mbps = ''; Ttfb = ''; Bytes = 0; Err = 'skip' }
+    if ($SocksPort -and $SpeedEvery -gt 0 -and ($script:round % $SpeedEvery) -eq 0) {
+        $thr = Measure-Throughput -Url $SpeedUrl -Port $SocksPort
+    }
+    $egress = ''
+    if ($SocksPort -and $EgressEvery -gt 0 -and ($script:round % $EgressEvery) -eq 0) {
+        $egress = Get-EgressIp $SocksPort
+    }
+
     $row = $stamp + ',' + $gwStatus + ',' + $pubStatus + ',' + $peerStatus +
            ',"' + $peerInfo.CurAddr + '"' +
            ',"' + $peerInfo.Relay + '"' +
            ',"' + $peerInfo.LastHandshake + '"' +
-           ',"' + $peerInfo.Diag + '"'
+           ',"' + $peerInfo.Diag + '"' +
+           ',"' + $egress + '"' +
+           ',' + $thr.Mbps + ',' + $thr.Ttfb + ',' + $thr.Bytes + ',"' + $thr.Err + '"'
 
     Add-Content -Path $LogPath -Value $row -Encoding UTF8
     Start-Sleep -Seconds $IntervalSeconds

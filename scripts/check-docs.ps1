@@ -37,7 +37,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $checks = New-Object System.Collections.ArrayList
 
 # 断言数下限：删检查项会让门禁变松，这里拦住。
-$MinChecks = 14
+$MinChecks = 15
 
 function Add-Check {
     param([string]$Name, [bool]$Ok, [string]$Hint)
@@ -173,6 +173,20 @@ if (-not $SelfTest) {
     Add-Check '没有未解决的合并冲突标记' `
         ($conflicted.Count -eq 0) `
         ("冲突文件: " + (($conflicted | ForEach-Object { $_.Name }) -join ', '))
+}
+
+# ---------------------------------------------------------------- 7. probe 的列定义（脚本与文档必须一致）
+if (-not $SelfTest) {
+    $probe = Read-Doc 'scripts/probe.ps1'
+    $mreadme = Read-Doc 'measurements/README.md'
+
+    Add-Check 'probe.ps1 采集 egressIp 与 mbpsEff' `
+        ($probe -and $probe -match 'egressIp' -and $probe -match 'mbpsEff') `
+        'CSV 里要有出口 IP 和扣除 TTFB 后的有效吞吐，否则 measurements 还是故事不是数据'
+
+    Add-Check 'measurements/README.md 记录了同一组列' `
+        ($mreadme -and $mreadme -match 'mbpsEff' -and $mreadme -match 'egressIp') `
+        '脚本加的列必须在 measurements/README.md 里有释义，否则下一个人看不懂 CSV'
 }
 
 # ---------------------------------------------------------------- 断言数下限

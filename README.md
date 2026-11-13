@@ -210,7 +210,7 @@ scripts/
   gen-pac.ps1           生成分流 PAC                （在【境外】这台跑）
   verify.ps1            一键自检，十项断言，红项给修复命令
   check-docs.ps1        文档一致性门禁（CI 里跑，-SelfTest 可自检）
-  probe.ps1             每 5 秒一条的链路探针（互斥体保证单实例）
+  probe.ps1             链路探针：可达性 + 周期采吞吐/出口 IP（互斥体保证单实例）
   clashpipe.ps1         读写 Clash/mihomo 的命名管道 API
 examples/
   proxy-mihomo.pac      过渡期三级回退 PAC 示例

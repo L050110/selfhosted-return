@@ -10,22 +10,63 @@
 | `probe-sample.csv` | 每 5 秒一条的隧道探针记录，最近 300 条（约 25 分钟）。完整记录在本机，没上传 |
 | `2026-11-12-scenario.md` | 当晚全部对照实测（gost vs hysteria2 vs 各端口） |
 
-## probe-sample.csv 的列
+## probe.csv 的列
+
+`probe.ps1` 现在采两类东西：**可达性**（每轮）和**吞吐/出口**（按周期）。
 
 ```
-time,gateway,public,peer,curAddr,relay,lastHandshake,diag
+timestamp,gateway,public,peer,curAddr,relay,lastHandshake,tsDiag,egressIp,mbpsEff,ttfbSec,bytes,speedDiag
 ```
 
-| 列 | 含义 | 正常值 |
-| --- | --- | --- |
-| `time` | 本地时间 | — |
-| `gateway` | 到本地网关的 ICMP，1=通 | `1` |
-| `public` | 到公网（8.8.8.8）的 ICMP，1=通 | `1` |
-| `peer` | 到对端 Tailscale IP 的 TCP 连接，1=通 | `1` |
-| `curAddr` | Tailscale 当前实际用的地址 | 对端的 `公网IP:端口`（说明是 direct，没走 DERP） |
-| `relay` | Tailscale 的中继名 | 空或任意；`curAddr` 有值就说明没在用中继 |
-| `lastHandshake` | 最近一次握手的本地时间 | 与 `time` 相差 < 1 分钟 |
-| `diag` | 综合判定 | `ok` |
+| 列 | 频率 | 含义 | 正常值 |
+| --- | --- | --- | --- |
+| `timestamp` | 每轮 | 本地时间 | — |
+| `gateway` | 每轮 | 到本地网关的 ICMP，1=通 | `1` |
+| `public` | 每轮 | 到公网（如 8.8.8.8）的 ICMP，1=通 | `1` |
+| `peer` | 每轮 | 到对端 Tailscale IP 的 TCP 连接，1=通 | `1` |
+| `curAddr` | 每轮 | Tailscale 当前实际用的地址 | 对端的 `公网IP:端口`（说明是 direct，没走 DERP） |
+| `relay` | 每轮 | Tailscale 的中继名 | 空或任意；`curAddr` 有值说明没在用中继 |
+| `lastHandshake` | 每轮 | 最近一次握手的本地时间 | 与 `timestamp` 相差 < 1 分钟 |
+| `tsDiag` | 每轮 | Tailscale 查询的判定 | `ok` |
+| `egressIp` | 每 N 轮 | 经 SOCKS 出口看到的公网 IP | 对端的住宅 IP；不是本地 IP |
+| `mbpsEff` | 每 N 轮 | **扣除 TTFB 后的有效吞吐**（Mbps） | 见下 |
+| `ttfbSec` | 每 N 轮 | 首字节等待（秒） | 洲际链路 0.7–1.2 常见 |
+| `bytes` | 每 N 轮 | 本次采样下载的字节数 | 与 `-SpeedUrl` 一致 |
+| `speedDiag` | 每 N 轮 | 采样判定 | `ok` / `skip`（本轮不采）/ 其他=失败原因 |
+
+> **旧文件是 8 列**（`time,...,diag`），`probe-sample.csv` 就是旧格式，保留原样作为历史样本。
+> 新采的记录一律 13 列。
+
+### 为什么是 `mbpsEff` 而不是 `speed_download`
+
+`curl -w %{speed_download}` = 字节数 / `time_total`，**分母含 DNS、建连、等首字节**。
+225 ms RTT 的洲际链路上 TTFB 常到 0.7–1.2 秒，摊进十几秒的传输里会凭空少 4–5%。
+
+```
+mbpsEff = bytes × 8 / (time_total − time_starttransfer) / 1e6
+```
+
+`probe.ps1` 就是这么算的，所以这列可以直接拿去画图，不用二次修正。
+
+### 一个必须知道的副作用
+
+**采样那轮会拖慢节奏。** `-IntervalSeconds` 是「两轮之间 sleep 多久」，不是墙钟周期。
+在 7.5 Mbps 的链路上采 5 MB 要 5–7 秒，所以第 N 轮和第 N+1 轮之间会多出这段时间。
+
+要无干扰的等间隔数据，两条路：
+
+- 把 `-SpeedUrl` 换成小一点的（比如 `?bytes=1000000`），采样耗时降到 1 秒级
+- 或者只关心吞吐、不关心频率：`-SpeedEvery 60`（5 秒间隔下约 5 分钟采一次）
+
+### 从 CSV 直接出报告
+
+```powershell
+Import-Csv .\probe.csv | Where-Object { $_.speedDiag -eq 'ok' } |
+  Select-Object timestamp, mbpsEff, ttfbSec, egressIp |
+  Format-Table -AutoSize
+```
+
+成功采样的行拿去算中位数/离散度，口径见 [docs/how-to-verify.md](../docs/how-to-verify.md) 第二节。
 
 ## 为什么这四列要一起看
 
