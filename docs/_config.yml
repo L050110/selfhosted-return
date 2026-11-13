@@ -1,5 +1,5 @@
-title: 用一台境外的家用电脑做回国出口
-description: Use a residential machine abroad as an exit node back into the mainland
+title: 双向住宅出口 — 自建回国 / 出国链路
+description: Use a residential machine on either end as an exit node. Bidirectional, with measured numbers, per-direction ceilings and the pitfalls that make it look broken before it works.
 theme: jekyll-theme-minimal
 show_downloads: false
 markdown: kramdown
