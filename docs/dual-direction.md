@@ -78,15 +78,22 @@ hysteria2 client  ──QUIC(Brutal)──▶  Tailscale tunnel (WireGuard)
 
 ## MTU：这条链路的硬边界
 
-```
-Tailscale 接口 MTU                1320
-实测路径 PMTU                    1303 通 / 1328 不通
-quic-go InitialPacketSize        1280   ← 首包默认值（protocol.InitialPacketSize）
-quic-go MinInitialPacketSize     1200   ← 只是下限，不是默认值
-```
+首包到底多大，取决于 **Chrome-parrot 是否开启**：
 
-**首包 1280 + 28（IP 20 + UDP 8）= 1308 < 1320，装得下，不分片。**
-握手完成后 PMTUD 会向上探测，能探到多少取决于路径。
+| 模式 | 线上首包（UDP 载荷） | +28 后总包 | 需要网卡 MTU |
+| --- | --- | --- | --- |
+| **parrot 开**（hysteria 默认，`disableChromeParrot: false`） | **1250** | 1278 | ≥ 1280 |
+| parrot 关（`disableChromeParrot: true`） | **1280** | 1308 | ≥ 1308 |
+| quic-go 下限 `MinInitialPacketSize` | 1200 | 1228 | ≥ 1228 |
+| **Tailscale 默认网卡** | — | — | 1280（只够第一行） |
+| **本项目建议** | — | — | **1320** |
+
+出处：apernet/quic-go fork `internal/protocol/params.go` 的
+`const InitialPacketSize = 1280`，以及 `chrome_parrot.go` 的
+`chromeInitialPacketSize = 1250`（`populateConfig()` 里 parrot 开启时用它覆盖）。
+
+**判据：网卡 MTU < 1308 时，只要有人把 `disableChromeParrot` 打开，握手就会静默挂。**
+所以别赌默认值，直接设 **1320**。
 
 > **这里有个容易搞混的点**：很多资料里出现的 `1200` 是 quic-go 的
 > `MinInitialPacketSize`（**下限**，配得更小会被抬回 1200），

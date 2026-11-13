@@ -360,57 +360,81 @@ Select-String -Path .\client.yaml -Pattern 'sni:'
 
 ## 修法
 
-**`sni` 永远用域名形式。`insecure: true` 时它不被验证，所以填什么都行，只要不是 IP。**
+**`sni` 必须用域名形式，而且必须命中服务端证书里的名字。**
 
-```yaml
-tls:
-  sni: hysteria.local      # 用证书的 CN，或者任何域名
-  insecure: true
-  pinSHA256: aa:bb:cc:...  # 有 pin 更稳
-```
+> **本节改过两次，以这次为准。** 旧版本写过「`insecure: true` 时填什么都行，只要不是 IP」——
+> **那是错的**，会让人以为 `insecure` 等于「全关了」。
 
-**用 `hysteria cert` 生成证书时，CN 是「这台机器的名字」，不是你能随手指定的域名。**
-
-这一条实测推翻过一个流传很广的写法（包括本文档的旧版本）：
+### 证书这一侧：`cert` 接受 flag，只拒绝位置参数
 
 ```powershell
-hysteria cert --host hysteria.local     # ❌ v2.13.0 直接报错
-# FATAL cert command does not accept arguments
+hysteria cert hysteria.local          # ❌ FATAL cert command does not accept arguments
+hysteria cert --host hysteria.local   # ✅ 正常：CN 与 DNS SAN 都是 hysteria.local
+hysteria cert                         # ✅ 默认 --host = os.Hostname()
 ```
 
-正确用法是**不带任何参数**：
+v2.13.0 源码（`app/v2.13.0/app/cmd/cert.go`）的 `initCertFlags()` 定义了
+`--host / --cert / --key / --valid-for / --overwrite` 五个 flag；
+`runCertCmd` 只在 `len(args) != 0` 时 Fatal。
+
+**所以不要「先无参生成、再猜 CN」。** 直接 `--host` 指定，
+再把这个**同一个值**写进客户端 `sni`：
 
 ```powershell
-hysteria cert
-```
-
-v2.13.0 用 `os.Hostname()` 当 CN，同时生成 `DNS Name=<机器名>` 的 SAN。
-机器叫什么，证书就叫什么。所以真正要做的不是「指定域名」，
-而是**先查出 CN 是什么，再把客户端的 `sni` 对齐过去**：
-
-```powershell
-# 对端机器上：看证书到底叫什么
-openssl x509 -in server.crt -noout -subject -ext subjectAltName
-#   subject=CN=MSI
-#   X509v3 Subject Alternative Name: DNS:MSI
+# 服务端
+hysteria cert --host hysteria.local --overwrite
 ```
 
 ```yaml
 # 客户端
 tls:
-  sni: MSI          # ← 就是上面那个 CN
+  sni: hysteria.local      # ← 与服务端 --host 完全一致
   insecure: true
+  pinSHA256: aa:bb:cc:...  # 有 pin 更稳
 ```
 
-`insecure: true` 只跳过证书链校验，**SNI 的格式和匹配仍然会被检查**。
-所以 `insecure` 不是「全关了」。
+### 为什么 sni 必须命中证书名：服务端的 sniGuard，不是客户端
 
-想要自己的域名，就别用 `hysteria cert`，用 `openssl` 或 ACME 自己签一张。
+这一层以前没写清楚，是理解「为什么 `insecure: true` 也没用」的关键：
+
+```yaml
+# 服务端 server.yaml
+tls:
+  cert: server.crt
+  key: server.key
+  sniGuard: strict | disable | dns-san    # 默认 dns-san
+```
+
+官方定义：**`sniGuard` 校验客户端发来的 SNI，与证书内容不匹配就由服务端终止 TLS 握手。**
+
+| 取值 | 行为 |
+| --- | --- |
+| `dns-san`（**默认**） | 证书里存在**域名型 SAN** 时启用校验；没有 DNS SAN 就不校验 |
+| `strict` | 无条件校验 |
+| `disable` | 完全关闭 |
+
+**失败链路（服务端主动拒，不是客户端验证失败）：**
+
+```
+客户端 sni 与证书名不匹配
+  → 服务端 sniGuard 判定失败
+  → 服务端终止握手，回 TLS alert internal_error(80)
+  → 客户端只看到 CRYPTO_ERROR 0x150 (remote): tls: internal error
+```
+
+**`insecure: true` 关掉的是客户端验证证书链，关不掉服务端这道门。**
+
+所以「填个随便的域名」照样挂。真想随便填，只有两条路：
+把服务端改成 `sniGuard: disable`（不推荐，等于关掉防护），
+或者换一张**没有 DNS 型 SAN** 的证书（此时 `dns-san` 模式不启用校验）。
+
+> 顺带一句：`hysteria cert` 生成的证书**一定带 DNS SAN**（就是 CN 那个名字），
+> 所以用它的默认产物，`sniGuard` 必然处于启用状态。
 ## 为什么这个坑值得记
 
 ```
 · 错误信息完全指向错误方向（看起来像证书/密码问题）
-· insecure: true 给人一种「什么都关了」的错觉，其实 SNI 格式仍然被检查
+· insecure: true 给人一种「什么都关了」的错觉，其实服务端 sniGuard 仍在校验 SNI 匹配
 · 服务端可能一个字都不记
 · 排查时会先去查密码、证书、端口，全查完才想到 SNI
 ```

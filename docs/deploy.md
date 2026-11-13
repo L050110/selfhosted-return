@@ -129,8 +129,9 @@ Get-Content .\s.err -Tail 5
 
 ```yaml
 bandwidth:
-  up: 18 mbps        # 对端的上行（也就是你这边的上行）
-  down: 95 Mbps      # 你这边能收到的速率，填服务端上行的 90-95%
+  up: 18 mbps        # 你（客户端）这边的上行能力
+  down: 95 Mbps      # 你（客户端）这边的下行天花板 = 服务端实测上行 × 0.90-0.95
+# 方向对照（服务端 up = 客户端下载）见 docs/outbound.md 的四行表
 
 quic:
   initStreamReceiveWindow: 16777216

@@ -229,9 +229,11 @@ quic:
   maxIdleTimeout: 30s
   keepAlivePeriod: 10s
 
-# Chrome-style QUIC fingerprint. hysteria2 sends its Initial packet at 1250 bytes
-# (30 below quic-go's 1280 default), which is exactly the headroom that keeps it
-# under a 1280-MTU virtual adapter. Setting this to true disables that and sends
+# Chrome-style QUIC fingerprint. With parrot on, the Initial packet goes out at
+# 1250 bytes (apernet/quic-go chrome_parrot.go: chromeInitialPacketSize = 1250),
+# 30 below quic-go's 1280 default -- exactly the headroom that keeps it under a
+# 1280-MTU virtual adapter. Setting this to true disables parrot and sends the
+# full 1280 (total 1308), so a 1280-MTU adapter will then drop the handshake.
 # full-size packets, re-triggering the MTU trap on its own.
 # Verified against the binary: the key is `disableChromeParrot`, not `sniff`
 # (`sniff` exists only as an outbound-level field, so a top-level `sniff:` block
