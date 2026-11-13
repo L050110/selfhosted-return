@@ -68,7 +68,8 @@ MTU 和封装在哪一层限制了吞吐。
 | `scripts/setup-client.ps1` | 生成客户端配置，含握手验证 |
 | `scripts/install-watchdog.ps1` | 看门狗：崩溃 5 秒重启，含自愈实测 |
 | `scripts/gen-pac.ps1` | 生成分流 PAC（极简版 / 过渡版） |
-| `scripts/verify.ps1` | **一键自检**：九项断言，只读，红项直接打印修复命令 |
+| `scripts/verify.ps1` | **一键自检**：十项断言（坑 1–9、11），只读，红项直接打印修复命令 |
+| `scripts/check-docs.ps1` | **文档一致性门禁**：14 项断言，CI 里跑，防止「改一处漏一处」 |
 | `scripts/probe.ps1` | 每 5 秒一条的链路探针，互斥体保证单实例 |
 | `scripts/clashpipe.ps1` | 读写 Clash/mihomo 的命名管道 API（它的 controller 常常不在 TCP 上） |
 

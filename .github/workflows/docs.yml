@@ -1,0 +1,36 @@
+name: docs
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 文档一致性门禁
+        shell: pwsh
+        run: ./scripts/check-docs.ps1
+
+      - name: 脚本语法解析（全部 .ps1）
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem ./scripts -Filter *.ps1 -File | ForEach-Object {
+            $err = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$err)
+            if ($err -and $err.Count -gt 0) {
+              $bad++
+              Write-Host "FAIL $($_.Name)"
+              $err | Select-Object -First 3 | ForEach-Object {
+                Write-Host ("     L{0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+              }
+            } else {
+              Write-Host "PASS $($_.Name)"
+            }
+          }
+          if ($bad -gt 0) { exit 1 }

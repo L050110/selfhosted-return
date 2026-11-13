@@ -21,6 +21,7 @@ param(
     [string]$TaskName,
     [int]$QuicMtu = 1280,
     [int]$SocksPort,
+    [int]$ListenPort,
     [string]$PeerExitIp
 )
 
@@ -55,8 +56,11 @@ function Get-YamlScalar {
 Write-Host "`n=== 隧道自检 ===`n" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------- 坑 1：MTU
-# QUIC 的 InitialPacketSize 是 1280。进隧道的内层 IP 包 = 1280 + 20(IPv4) + 8(UDP) = 1308。
-# 虚拟网卡 MTU 低于 1308 就会静默丢握手包。
+# QUIC 首包大小取决于 Chrome-parrot：
+#   parrot 开（hysteria 默认）  InitialPacketSize = 1250 -> 内层 1250+20+8 = 1278
+#   parrot 关                    InitialPacketSize = 1280 -> 内层 1280+20+8 = 1308
+# 本脚本按【最坏情况 1308】判定：只要网卡 >= 1308，两种模式都安全。
+# 虚拟网卡 MTU 低于该值时，握手包会被静默丢弃（客户端只看到超时）。
 $required = $QuicMtu + 28
 $ifaces = Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue |
           Where-Object { $_.InterfaceAlias -match 'Tailscale' }
@@ -271,9 +275,38 @@ if ($SocksPort) {
     Report 'P9' 'SKIP' '没找到 socks5 监听端口（客户端没配 socks5，或没传 -SocksPort）' $null
 }
 
+# ---------------------------------------------------------------- 坑 11：listeners 端口绑死出口
+# 症状：listeners[].proxy 写成了策略组名 -> 端口静默不监听（不报错、无日志）。
+# 所以这里只断言两件事：端口在听、且经该端口的出口确实是期望的对端。
+if ($ListenPort) {
+    $lis = Get-NetTCPConnection -State Listen -LocalPort $ListenPort -ErrorAction SilentlyContinue
+    if (-not $lis) {
+        Report 'P11' 'FAIL' "端口 $ListenPort 没在监听（listeners[].proxy 很可能填了策略组名）" `
+            "把 listeners[].proxy 改成 proxies 里真实存在的节点 name（策略组名不会报错，只是不监听）"
+    } else {
+        $lpExit = $null
+        try {
+            $lpExit = (& curl.exe -s -m 15 -x "socks5h://127.0.0.1:$ListenPort" https://ipinfo.io/ip 2>$null | Out-String).Trim()
+        } catch { }
+        if (-not $lpExit) {
+            Report 'P11' 'FAIL' "端口 $ListenPort 在监听，但经它出不了网" `
+                "看 mihomo 日志里这个 listener 是否真的绑定到了节点；也可用 clashpipe.ps1 -Path '/proxies' 核对节点名"
+        } elseif ($PeerExitIp -and $lpExit -ne $PeerExitIp) {
+            Report 'P11' 'FAIL' "端口 $ListenPort 出口是 $lpExit，期望 $PeerExitIp" `
+                "listeners[].proxy 指到了别的节点"
+        } else {
+            $exp = if ($PeerExitIp) { "（== 期望的 $(($PeerExitIp))）" } else { '' }
+            Report 'P11' 'PASS' "端口 $ListenPort 在监听，出口 $lpExit$exp" $null
+        }
+    }
+} else {
+    Report 'P11' 'SKIP' '没传 -ListenPort，跳过 listeners 绑定检查' $null
+}
+
 # ---------------------------------------------------------------- 汇总
 Write-Host ""
 Write-Host ("PASS {0}   FAIL {1}   SKIP {2}" -f $script:pass, $script:fail, $script:skip) -ForegroundColor Cyan
+Write-Host "覆盖：坑 1-9（P1-P9）+ 坑 11（P11）。坑 10（WebRTC/TUN）与坑 12（运行时配置/看门狗）无法自动断言，需人工判断。" -ForegroundColor DarkGray
 if ($script:fail -gt 0) {
     Write-Host "有 FAIL —— 先修上面红的那几项，再看其它。" -ForegroundColor Red
     exit 1

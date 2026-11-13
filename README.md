@@ -151,7 +151,10 @@ hysteria2 负责跑流量（QUIC + 固定速率拥塞控制，高丢包环境下
                      -TaskName hysteria-client-watchdog -PeerExitIp <对端公网 IP>
 ```
 
-九项逐条断言，红项会直接打印修复命令。退出码 0 = 全绿。
+**十项**逐条断言（覆盖坑 1–9 与坑 11），红项会直接打印修复命令。退出码 0 = 全绿。
+
+> 坑 10（WebRTC/TUN）与坑 12（运行时配置被重写、双看门狗抢端口）无法自动断言，需人工判断。
+> 所以「全绿」= 已覆盖的 10 项都过，**不等于**十二个坑都验过。
 
 ---
 
@@ -177,7 +180,7 @@ git clone <THIS_REPO>
 # 4. 在【境外】这台生成分流规则
 .\scripts\gen-pac.ps1
 
-# 5. 自检九项，全绿再用
+# 5. 自检十项，全绿再用
 .\scripts\verify.ps1 -ClientConfig .\client.yaml -ServerConfig .\server.yaml
 ```
 
@@ -200,11 +203,13 @@ docs/
   deploy.md             部署流程、并行过渡、回滚
   verified-versions.md  真的跑起来过的版本组合（含三个版本相关的坑）
 scripts/
+  check-docs.ps1        文档一致性门禁：改一处漏一处就会红
   setup-server.ps1      生成服务端配置 + 自签证书   （在【境内】那台跑）
   setup-client.ps1      生成客户端配置 + 握手自检    （在【境外】这台跑）
   install-watchdog.ps1  看门狗：崩溃 5 秒重启        （两端各跑一次，-Role 不同）
   gen-pac.ps1           生成分流 PAC                （在【境外】这台跑）
-  verify.ps1            一键自检，九项断言，红项给修复命令
+  verify.ps1            一键自检，十项断言，红项给修复命令
+  check-docs.ps1        文档一致性门禁（14 项，CI 里跑）
   probe.ps1             每 5 秒一条的链路探针（互斥体保证单实例）
   clashpipe.ps1         读写 Clash/mihomo 的命名管道 API
 examples/
