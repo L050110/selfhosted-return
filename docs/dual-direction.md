@@ -79,12 +79,22 @@ hysteria2 client  ──QUIC(Brutal)──▶  Tailscale tunnel (WireGuard)
 ## MTU：这条链路的硬边界
 
 ```
-Tailscale 接口 MTU        1320
-实测路径 PMTU            1303 通 / 1328 不通
-hysteria2 默认 MTU        1200
+Tailscale 接口 MTU                1320
+实测路径 PMTU                    1303 通 / 1328 不通
+quic-go InitialPacketSize        1280   ← 首包默认值（protocol.InitialPacketSize）
+quic-go MinInitialPacketSize     1200   ← 只是下限，不是默认值
 ```
 
-1200 + QUIC 头 < 1320，装得下，**不分片**。
+**首包 1280 + 28（IP 20 + UDP 8）= 1308 < 1320，装得下，不分片。**
+握手完成后 PMTUD 会向上探测，能探到多少取决于路径。
+
+> **这里有个容易搞混的点**：很多资料里出现的 `1200` 是 quic-go 的
+> `MinInitialPacketSize`（**下限**，配得更小会被抬回 1200），
+> 而实际默认发出去的 `InitialPacketSize` 是 **1280**。
+> 判断"会不会分片"要用 1280+28=1308，不能用 1200。
+>
+> 另外 hysteria2 的配置里**没有** MTU 字段——这个值由 quic-go 的默认值决定，
+> 想改只能改 `quic.InitialPacketSize`（hysteria 未暴露）或加底层封装。
 
 `1328` 不通不是"MTU 黑洞"，是超过 Tailscale 的 1320 后需要隧道内分片，分片被丢弃。
 这是预期行为，不是故障。

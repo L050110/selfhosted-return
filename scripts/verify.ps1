@@ -84,7 +84,11 @@ if ($ServerConfig) {
             $shown = if ($ign) { $ign } else { '未设置（默认 false）' }
             Report 'P3' 'PASS' "ignoreClientBandwidth=$shown" $null
         }
-        # bandwidth.up 是「客户端上行」的硬上限，也就是下载方向的天花板
+        # 方向对照（最容易搞反的地方）：
+        #   服务端 bandwidth.up   = 服务器上行 = 客户端【下载】方向的天花板
+        #   服务端 bandwidth.down = 服务器下行 = 客户端【上传】方向的供给
+        # 也就是说：服务端写 up = 客户端下行的上限，名字反过来读。
+        # （客户端配置里同名字段含义相反：客户端 up = 客户端上行）
         $bwUp = Get-YamlScalar -Path $ServerConfig -Key 'up'
         $bwDown = Get-YamlScalar -Path $ServerConfig -Key 'down'
         if ($bwUp -or $bwDown) {

@@ -290,10 +290,11 @@ RFC 6066 规定 TLS 的 SNI 扩展只能是 DNS 主机名，不能是 IP 字面�
 > 这条我一开始写错了，实测打回来：`insecure: true` 只跳过**证书链校验**，
 > SNI 的格式和匹配仍然会被检查。填一个「随便的占位域名」照样握手失败。
 >
-> 更麻烦的是 hysteria 2.x 的 `cert` 子命令**不吃任何参数**——
-> `hysteria cert --host my.domain` 直接 `FATAL cert command does not accept arguments`。
-> 它用 `os.Hostname()` 当 CN。所以正确流程是：
-> 先 `hysteria cert`，再读出 CN，再把客户端的 `sni` 对齐过去。
+> 证书这边有个容易传错的说法：`hysteria cert` **接受 flag，只是不接受位置参数**。
+> `hysteria cert my.domain` → `FATAL cert command does not accept arguments`；
+> 而 `hysteria cert --host my.domain` 正常工作（`--host/--cert/--key/--valid-for/--overwrite`
+> 在 v2.13.0 全都有）。默认 `--host` 取 `os.Hostname()`。
+> 所以正确流程是：生成时**显式指定** `--host`，把它的值原样写进客户端的 `sni`。
 > `scripts/setup-server.ps1` 会把 CN 写进 `cert-cn.txt`，
 > `setup-client.ps1` 读它——读不到就拒绝生成配置，而不是瞎填一个。
 

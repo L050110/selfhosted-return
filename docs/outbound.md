@@ -42,10 +42,11 @@
 ### 1. 境外那台：起服务端
 
 ```powershell
-# 证书：v2.13.0 的 cert 命令不吃任何参数，CN 取机器名
-hysteria cert          # 成功会生成 server.crt / server.key
+# 证书：cert 接受 flag，不接受位置参数
+hysteria cert --host hysteria.local --overwrite   # 生成 server.crt / server.key
 
-# 记下 CN，客户端 sni 必须等于它
+# 客户端 tls.sni 必须等于这里的 --host 值
+# （不传 --host 时默认取 os.Hostname()）
 # 在 server.yaml 里确认 listen 是 UDP，例如 listen: :9443
 ```
 
@@ -68,6 +69,20 @@ ignoreClientBandwidth: false
 
 > `ignoreClientBandwidth: true` 会让 Brutal **静默退化成普通 BBR**，
 > 抗丢包能力归零，而且不报错。这是坑 3。
+
+**`bandwidth.up/down` 到底指谁——这张表最容易搞反：**
+
+| 配置位置 | 字段 | 实际含义 |
+| --- | --- | --- |
+| **服务端** | `up` | 服务器的**上行** → 决定**客户端下载**方向的天花板 |
+| **服务端** | `down` | 服务器的**下行** → 客户端上传方向的供给 |
+| **客户端** | `up` | 客户端的**上行** → 决定**服务端下载**的方向 |
+| **客户端** | `down` | 客户端的**下行** → 本机**下载**方向的天花板 |
+
+**一句话记法**：服务端写 `up`，管的是你**下载**。
+
+所以服务端 `up` 填的是**对端那台机器的真实上行带宽**，客户端 `down` 填的是
+**你这条路径实际能交出的量**——两个数不一样，别照抄。
 
 ### 2. 境内这台：起客户端
 

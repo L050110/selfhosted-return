@@ -78,15 +78,17 @@ if ($existing -and -not $Overwrite) {
 Write-Host "=== certificate ===" -ForegroundColor Cyan
 Push-Location $root
 try {
-    # hysteria 2.x 的 `cert` 子命令【不吃任何参数】（v2.13.0 实测：
-    # 带 --host 会直接 FATAL "cert command does not accept arguments"）。
-    # 它用 os.Hostname() 当 CN，同时生成 DNS Name=<机器名> 的 SAN。
-    # 老版本（1.x / 部分 2.0）才需要 --host。所以：先试无参，失败再退回 --host。
-    $certOut = & $exe cert 2>&1
+    # hysteria 的 `cert` 子命令【接受 flag，只拒绝位置参数】：
+    #   hysteria cert my.domain       -> FATAL "cert command does not accept arguments"
+    #   hysteria cert --host my.domain -> 正常
+    # v2.13.0 有 --host / --cert / --key / --valid-for / --overwrite 五个 flag。
+    # 不传 --host 时默认取 os.Hostname() 当 CN + SAN。
+    # 所以：先带 --host（可以指定 CN，行为可控），失败再退回无参（照顾极老版本）。
+    $certOut = & $exe cert --host $CertHost --overwrite 2>&1
     $certCode = $LASTEXITCODE
     if ($certCode -ne 0) {
-        Write-Host "  [i] bare 'cert' did not work, retrying with --host (older builds)" -ForegroundColor DarkGray
-        $certOut  = & $exe cert --host $CertHost --overwrite 2>&1
+        Write-Host "  [i] '--host' rejected, retrying bare (build predates the flag)" -ForegroundColor DarkGray
+        $certOut  = & $exe cert 2>&1
         $certCode = $LASTEXITCODE
     }
     $certOut | ForEach-Object { Write-Host "  $_" }

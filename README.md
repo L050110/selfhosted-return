@@ -124,9 +124,11 @@ hysteria2 负责跑流量（QUIC + 固定速率拥塞控制，高丢包环境下
 4. **Windows 上改 MTU 必须用 `TS_DEBUG_MTU` 环境变量**，`netsh` 会被服务重启覆盖
 5. **本地代理内核可能劫持你的隧道进程**，让流量绕远路，速度掉一半
 6. **`tls.sni` 填了 IP 地址会握手失败** —— 报 `CRYPTO_ERROR 0x150`，
-   看起来像证书或密码问题，实际是 RFC 6066 禁止 SNI 用 IP 字面量。
-   更隐蔽的是：`sni` **还必须等于服务端证书的 CN**，而 `hysteria cert`
-   在 v2.13 里**不吃任何参数**，CN 取的是服务端机器名
+   看起来像证书或密码问题。实际是 Go 的 `crypto/tls` **对 IP 字面量根本不发 SNI**
+   （`hostnameInSNI()` 命中 `net.ParseIP` 就返回空串），服务端因此拒握手。
+   更隐蔽的是：`sni` **还必须等于服务端证书的 CN**。`hysteria cert` 默认拿
+   `os.Hostname()` 当 CN，但**可以用 `--host` 指定**——它接受 flag，
+   只有**位置参数**才报 `cert command does not accept arguments`
 7. **防火墙里一条指名的 `Block` 规则会压过 `Allow`** —— 端口在听、服务端零日志、
    客户端一直 timeout，你会去改端口改协议改机器，全是白费
 8. **SSH 里起的进程会跟着会话一起死** —— `conhost --headless` 也救不了，

@@ -23,9 +23,10 @@
 
 三条都是踩过的：
 
-1. **hysteria 2.x 的 `cert` 命令不吃参数。** `hysteria cert hysteria.local` 会直接
-   `FATAL cert command does not accept arguments`。它用**机器名**当 CN/SAN。
-   跨版本时这个行为如果变了，坑 6 的修法就失效。
+1. **hysteria 2.x 的 `cert` 命令只拒绝位置参数。** `hysteria cert hysteria.local` 会
+   `FATAL cert command does not accept arguments`；但 `hysteria cert --host hysteria.local`
+   正常工作（`--host/--cert/--key/--valid-for/--overwrite` 在 v2.13.0 均存在）。
+   不传 `--host` 时默认取 `os.Hostname()` 当 CN/SAN。
 2. **Clash Verge 的合并配置语法在 2.4 → 2.5 之间变过。** 2.5.10 里
    `append-fake-ip-filter` 不会被展开，而是原样当成一个未知键丢掉——看起来写成功了，
    实际没生效，且不报错。要改 `dns.fake-ip-filter` 只能写 `Script.js`。

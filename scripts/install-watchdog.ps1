@@ -128,11 +128,7 @@ while ($true) {
 if ($ExeName -match 'mihomo') {
     $argsLiteral = "'-d', `$dir"
 } else {
-    $argsLiteral = "'$Role', '-c', `$cfg"
-}
-$argsLiteral = "'$Role', '-c', (Join-Path `$dir '{{CONFIG}}')"
-if ($ExeName -match 'mihomo') {
-    $argsLiteral = "'-d', `$dir"
+    $argsLiteral = "'$Role', '-c', (Join-Path `$dir '{{CONFIG}}')"
 }
 
 $runContent = $template.
